@@ -4,7 +4,7 @@ Speed up react development by never again waste time writing and fixing imports 
 
 ## Usage
 ```bash
-npm install auto-imports
+npm install -D auto-imports
 npx auto-imports --watch
 ```
 
@@ -61,5 +61,10 @@ If you have a utility module with multiple exports, group them into a single **n
 
 The script protects against two types of naming collisions by **skipping the conflicting import** and logging a warning:
 
-- **Reserved Globals:** if a component name already exists in `globalThis`.
-- **Duplicate Exports:** if two files export a default function or class with the exact same name.
+### Reserved Globals
+To avoid overwriting native APIs, the tool checks if an export name already exists in globalThis (e.g., fetch, Map, or Date). If a match is found, the file is ignored to maintain environment stability.
+
+### Duplicate Exports
+- If multiple files share the same default export name, the script applies a "first-discovery" rule:
+- Selection: Only the first file encountered during the directory crawl is registered in the global file.
+- Traceability: The console warning displays the paths for both the registered file and the conflicting one, making it easy to identify which file needs a rename.
