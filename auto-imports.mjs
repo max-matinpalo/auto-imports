@@ -40,7 +40,12 @@ async function walk(dir) {
 function getName(code) {
 	const clean = code.replace(/\/\*[\s\S]*?\*\/|\/\/.*/g, "");
 	const m = clean.match(/export\s+default\s+(?:async\s+)?(?:function\s+|class\s+)?([A-Za-z_$][A-Za-z0-9_$]*)/);
-	return m && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(m[1]) ? m[1] : null;
+	if (!m) return null;
+
+	const name = m[1];
+	if (["function", "class", "async"].includes(name)) return null;
+
+	return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : null;
 }
 
 async function write(f, c) {
