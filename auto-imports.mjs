@@ -28,7 +28,7 @@ async function getRoot(dir) {
 async function walk(dir) {
 	try {
 		const dns = await readdir(dir, { withFileTypes: true });
-		const f = await Promise.all(dns.map(function (d) {
+		const f = await Promise.all(dns.map(d => {
 			if (d.name === "node_modules" || d.name.startsWith(".")) return [];
 			const p = join(dir, d.name);
 			return d.isDirectory() ? walk(p) : resolve(p);
@@ -69,7 +69,7 @@ async function init() {
 		}
 
 		const all = await walk(srcAbs);
-		const files = all.filter(function (f) { return f !== gFileAbs && /\.[jt]sx?$/.test(f); });
+		const files = all.filter(f => f !== gFileAbs && /\.[jt]sx?$/.test(f));
 
 		if (files.length === 0) return console.log(`${YEL}0 files found in "${src}".${RST}\n`);
 
@@ -94,7 +94,7 @@ async function init() {
 			}
 
 			seen.set(name, f);
-			const rel = relative(outDir, f).replace(/\\/g, "/").replace(/\.[jt]sx?$/, "");
+			const rel = relative(outDir, f).replace(/\\/g, "/");
 			const req = rel.startsWith(".") ? rel : `./${rel}`;
 			out += `import ${name} from "${req}";\nglobalThis.${name} = ${name};\n\n`;
 		}
@@ -108,9 +108,8 @@ async function init() {
 
 	if (args.includes("--watch")) {
 		let t;
-		watch(srcAbs, { recursive: true }, function (_, f) {
-			if (!f || !/\.[jt]sx?$/.test(f) || f.includes("node_modules")) return;
-			if (f.includes(outBase)) return;
+		watch(srcAbs, { recursive: true }, (_, f) => {
+			if (!f || f.includes("node_modules") || f.includes(outBase)) return;
 			clearTimeout(t);
 			t = setTimeout(run, 150);
 		});
