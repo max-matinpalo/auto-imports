@@ -1,10 +1,8 @@
 {
 	"name": "auto-imports",
-	"version": "0.1.4",
+	"version": "0.2.1",
 	"type": "module",
+	"main": "auto-imports.js",
 	"author": "Max Matinpalo",
-	"license": "MIT",
-	"bin": {
-		"react-auto-import": "./auto-imports.mjs"
-	}
+	"license": "MIT"
 }

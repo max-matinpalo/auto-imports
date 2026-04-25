@@ -1,70 +1,165 @@
 # auto-imports
 
-Speed up react development by never again waste time writing and fixing imports 😃
+Stop hand-writing imports for React components and other PascalCase defaults. `auto-imports` is a tiny Vite plugin that scans your source files, finds named default exports, and injects missing imports automatically.
 
-## Usage
-```bash
-npm install -D auto-imports
-npx auto-imports --watch
-```
-
-This tools generates a file **global.js** that you must import at the top of your app’s entry point (for example, `main.js`):
-
-```js
-import "./global.js";
-```
-
-## Options
-
-| Option          | Description                | Default         |
-|----------------|----------------------------|-----------------|
-| `--src <dir>`  | Source directory           | `src`           |
-| `--out <file>` | Generated output file      | `src/global.js` |
-| `--watch`      | Auto-regenerate on changes |                 |
-
-## Implementation
-
-Mainstream JS developers are terrified of `globalThis` and cry about “polluting the global scope.”
-
-We are C developers. We love globals. We feels experienced enough to break conventions to write faster, cleaner code 😃 This tool automatically scans your `.js`, `.jsx`, `.ts`, and `.tsx` files, grabs your default exports, and binds them globally.
-
-No more:
+No more import spaghetti:
 
 ```js
 import Button from "../../components/Button";
 ```
 
-You just write:
+Just use the component:
 
 ```jsx
-<Button/>
+<Button />
 ```
 
-## The “Named Default” Rule
+## Install
 
-The script strictly looks for **named default exports**.
+```bash
+npm install -D auto-imports
+```
 
-At first, this might sound weird, but it works perfectly as an opt-in mechanism. A default export doesn’t technically require a name.
+## Usage
 
-- Want it global? Give it a name:
-  ```js
-  export default function Button() {}
-  ```
-- Want it local? Leave it anonymous:
-  ```js
-  export default function () {}
-  ```
+Add the plugin to your Vite config:
 
-If you have a utility module with multiple exports, group them into a single **named default object**, and the whole group becomes globally available automatically.
+```js
+import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+import autoImports from "auto-imports";
 
-## Collisions
+export default defineConfig({
+	plugins: [
+		autoImports(),
+		react()
+	]
+});
+```
 
-The script protects against two types of naming collisions by **skipping the conflicting import** and logging a warning:
+That’s it. During development and builds, the plugin scans your source files and injects imports for matching names when they are used.
 
-### Reserved Globals
-To avoid overwriting native APIs, the tool checks if an export name already exists in globalThis (e.g., fetch, Map, or Date). If a match is found, the file is ignored to maintain environment stability.
+## How it works
 
-### Duplicate Exports
-- If multiple files share the same default export name, the script applies a "first-discovery" rule:
-- Selection: Only the first file encountered during the directory crawl is registered in the global file.
-- Traceability: The console warning displays the paths for both the registered file and the conflicting one, making it easy to identify which file needs a rename.
+`auto-imports` scans your source directory for `.js`, `.jsx`, `.ts`, and `.tsx` files. It ignores `node_modules`, hidden folders, and `.d.ts` files.
+
+When it finds a capitalized default export, it remembers the export name and file path:
+
+```js
+export default function Button() {}
+```
+
+Then, when another file uses `Button` without importing or declaring it, the plugin injects the import automatically:
+
+```js
+import Button from "./components/Button";
+```
+
+## TypeScript support
+
+The plugin also writes a declaration file so TypeScript can understand the auto-imported globals:
+
+```txt
+src/global.d.ts
+```
+
+Make sure your `tsconfig.json` includes your source directory:
+
+```json
+{
+	"include": ["src"]
+}
+```
+
+## Export rules
+
+Only capitalized default exports are auto-imported.
+
+### Supported
+
+```js
+export default function Button() {}
+```
+
+```js
+export default class Modal {}
+```
+
+```js
+function Avatar() {}
+export default Avatar;
+```
+
+```js
+const Icons = { SearchIcon, CloseIcon };
+export default Icons;
+```
+
+### Ignored
+
+```js
+export default function () {}
+```
+
+```js
+export default helper;
+```
+
+```js
+export const Button = () => {};
+```
+
+Lowercase names, anonymous defaults, and named exports are ignored. This keeps auto-importing opt-in and predictable.
+
+## Options
+
+```js
+autoImports({
+	src: "src",
+	extensions: [".js", ".jsx", ".ts", ".tsx"],
+	dts: "src/global.d.ts"
+});
+```
+
+| Option | Description | Default |
+| --- | --- | --- |
+| `src` | Source directory to scan | `"src"` |
+| `extensions` | File extensions to scan | `[".js", ".jsx", ".ts", ".tsx"]` |
+| `dts` | Generated TypeScript declaration file | `"src/global.d.ts"` |
+
+## Manual imports win
+
+If a file already imports or declares a name, `auto-imports` leaves it alone:
+
+```js
+import Button from "./MySpecialButton";
+
+export default function Page() {
+	return <Button />;
+}
+```
+
+The plugin also skips importing from the same file, so exports do not accidentally import themselves. Tiny foot-gun helmet included. 🪖
+
+## Name collisions
+
+Avoid duplicate default export names. If multiple files export the same capitalized name, the latest discovered mapping can replace the previous one internally.
+
+Keep names unique for best results:
+
+```txt
+src/components/Button.jsx
+src/admin/AdminButton.jsx
+```
+
+## Notes
+
+- This is a Vite plugin, not a CLI.
+- It does not generate or require `global.js`.
+- It does not assign values to `globalThis`.
+- It injects real ES imports into transformed modules.
+- It is best suited for React components and PascalCase utility groups.
+
+## License
+
+MIT
