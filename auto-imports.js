@@ -115,9 +115,10 @@ export default function autoImports(options = {}) {
 			for (const name of words) {
 				if (!exportMap[name] || exportMap[name] === cleanId) continue;
 
-				// 2. Skip if locally declared
-				const isDeclared = new RegExp(`(import|const|let|var|function|class)\\s+${name}`).test(code);
-				if (isDeclared) continue;
+				// 2. Skip if locally declared or imported
+				const isImported = new RegExp(`import\\s+[^\\n'"]*?\\b${name}\\b`).test(code);
+				const isDeclared = new RegExp(`(?:const|let|var|function|class)[\\s\\{,]*\\b${name}\\b`).test(code);
+				if (isImported || isDeclared) continue;
 
 				// 3. Construct import path
 				const rel = relative(dirname(cleanId), exportMap[name])
