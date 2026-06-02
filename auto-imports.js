@@ -3,20 +3,21 @@ import { readFileSync } from "node:fs";
 import { join, resolve, relative, dirname } from "node:path";
 import esbuild from "esbuild";
 
-function isSourceFile(file, exts) {
-	const clean = file.split("?")[0];
+function isSourceFile(file, exts, dtsPath) {
+	const clean = resolve(file.split("?")[0]);
+	if (clean === resolve(dtsPath)) return false;
 	return !clean.endsWith(".d.ts") && exts.some(e => clean.endsWith(e));
 }
 
-async function walk(dir, exts) {
+async function walk(dir, exts, dtsPath) {
 	try {
 		const dns = await readdir(dir, { withFileTypes: true });
 		const f = await Promise.all(dns.map(d => {
 			if (d.name === "node_modules" || d.name.startsWith(".")) return [];
 			const p = join(dir, d.name);
-			return d.isDirectory() ? walk(p, exts) : resolve(p);
+			return d.isDirectory() ? walk(p, exts, dtsPath) : resolve(p);
 		}));
-		return f.flat().filter(file => isSourceFile(file, exts));
+		return f.flat().filter(file => isSourceFile(file, exts, dtsPath));
 	} catch {
 		return [];
 	}
@@ -29,7 +30,7 @@ async function writeDeclarationFile(map, dtsPath) {
 		const { file, isDefault } = map[name];
 		const rel = relative(dtsDir, file).replace(/\\/g, "/").replace(/\.[jt]sx?$/, "");
 		const path = rel.startsWith(".") ? rel : `./${rel}`;
-		content += `\n	const ${name}: typeof import("${path}").${isDefault ? "default" : name};`;
+		content += `\n	var ${name}: typeof import("${path}").${isDefault ? "default" : name};`;
 	}
 	content += "\n}\n\nexport {};";
 	try {
@@ -56,10 +57,12 @@ export default function autoImports(options = {}) {
 	let exportMap = {};
 
 	const processFiles = async (files, map, server) => {
+		// 1. Clear existing map entries for these files
 		if (!files.length) return;
 		for (const name in map) {
 			if (files.includes(map[name].file)) delete map[name];
 		}
+		// 2. Build with esbuild and parse exports
 		try {
 			const result = await esbuild.build({
 				entryPoints: files,
@@ -83,11 +86,14 @@ export default function autoImports(options = {}) {
 						name = m[1];
 						isDefault = true;
 					}
+					// 3. Check for duplicate identifier conflicts
 					if (map[name] && map[name].file !== fileAbs) {
+						const msg = `[auto-imports] Conflict for "${name}".`;
+						console.error(`${msg}\n1. ${fileAbs}\n2. ${map[name].file}`);
 						if (server) server.ws.send({
 							type: "error",
 							err: {
-								message: `[auto-imports] Conflict for "${name}"`,
+								message: msg,
 								detail: `Paths:\n1. ${fileAbs}\n2. ${map[name].file}`,
 								plugin: "auto-imports"
 							}
@@ -98,22 +104,23 @@ export default function autoImports(options = {}) {
 				}
 			}
 		} catch (e) {
-			console.error(`Esbuild parse failed: ${e.message}`);
+			// Suppress general build errors to only log conflicts
 		}
 	};
 
 	const refreshMap = async (targetFiles, server) => {
+		const dtsPath = resolve(process.cwd(), opts.dts);
 		const newMap = targetFiles ? { ...exportMap } : {};
 		if (targetFiles) {
-			const validFiles = targetFiles.filter(f => isSourceFile(f, opts.extensions));
+			const validFiles = targetFiles.filter(f => isSourceFile(f, opts.extensions, dtsPath));
 			if (!validFiles.length) return;
 			await processFiles(validFiles, newMap, server);
 		} else {
-			const allFiles = await walk(resolve(process.cwd(), opts.src), opts.extensions);
+			const allFiles = await walk(resolve(process.cwd(), opts.src), opts.extensions, dtsPath);
 			await processFiles(allFiles, newMap, server);
 		}
 		exportMap = newMap;
-		await writeDeclarationFile(exportMap, resolve(process.cwd(), opts.dts));
+		await writeDeclarationFile(exportMap, dtsPath);
 		if (server) server.moduleGraph.invalidateAll();
 	};
 
@@ -128,8 +135,10 @@ export default function autoImports(options = {}) {
 			server.watcher.on("unlink", () => refreshMap(null, server));
 		},
 		async transform(code, id) {
+			const dtsPath = resolve(process.cwd(), opts.dts);
 			const cleanId = id.split("?")[0];
-			if (!isSourceFile(cleanId, opts.extensions) || cleanId.includes("node_modules")) return null;
+			if (cleanId.includes("node_modules")) return null;
+			if (!isSourceFile(cleanId, opts.extensions, dtsPath)) return null;
 			const words = findUppercaseWords(code);
 			let injected = "";
 			for (const name of words) {
