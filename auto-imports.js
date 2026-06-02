@@ -73,7 +73,7 @@ export default function autoImports(options = {}) {
 			for (const outputData of Object.values(result.metafile.outputs)) {
 				if (!outputData.entryPoint) continue;
 				const fileAbs = resolve(process.cwd(), outputData.entryPoint);
-				for (let name of outputData.exports) {
+				for (let name of outputData.exports || []) {
 					let isDefault = false;
 					if (name === "default") {
 						const code = readFileSync(fileAbs, "utf8");
@@ -105,7 +105,9 @@ export default function autoImports(options = {}) {
 	const refreshMap = async (targetFiles, server) => {
 		const newMap = targetFiles ? { ...exportMap } : {};
 		if (targetFiles) {
-			await processFiles(targetFiles, newMap, server);
+			const validFiles = targetFiles.filter(f => isSourceFile(f, opts.extensions));
+			if (!validFiles.length) return;
+			await processFiles(validFiles, newMap, server);
 		} else {
 			const allFiles = await walk(resolve(process.cwd(), opts.src), opts.extensions);
 			await processFiles(allFiles, newMap, server);
