@@ -88,14 +88,16 @@ export default function autoImports(options = {}) {
 					}
 					// 3. Check for duplicate identifier conflicts
 					if (map[name] && map[name].file !== fileAbs) {
-						const msg = `[auto-imports] Conflict for "${name}".`;
-						console.error(`${msg}\n1. ${fileAbs}\n2. ${map[name].file}`);
+						const msg = `Conflict for identifier "${name}"`;
+						const details = `Paths:\n1. ${fileAbs}\n2. ${map[name].file}`;
+						console.error(`[auto-imports] ${msg}\n${details}`);
 						if (server) server.ws.send({
 							type: "error",
 							err: {
 								message: msg,
-								detail: `Paths:\n1. ${fileAbs}\n2. ${map[name].file}`,
-								plugin: "auto-imports"
+								stack: details,
+								plugin: "auto-imports",
+								id: fileAbs
 							}
 						});
 						continue;
