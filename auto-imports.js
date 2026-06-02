@@ -59,7 +59,8 @@ export default function autoImports(options = {}) {
 		libs: Array.isArray(rawLibs) ? rawLibs : [rawLibs],
 		...options
 	};
-	let exportMap = {};
+	// FIX 1: Use a null-prototype object to prevent prototype lookup bugs
+	let exportMap = Object.create(null);
 
 	const processFiles = async (files, map, server) => {
 		if (!files.length) return;
@@ -114,7 +115,11 @@ export default function autoImports(options = {}) {
 
 	const refreshMap = async (targetFiles, server) => {
 		const dtsPath = resolve(process.cwd(), opts.dts);
-		const newMap = targetFiles ? { ...exportMap } : {};
+		// FIX 2: Safeguard target maps against prototype bugs here too
+		const newMap = targetFiles
+			? Object.assign(Object.create(null), exportMap)
+			: Object.create(null);
+
 		if (!targetFiles) {
 			for (const lib of opts.libs) {
 				try {
@@ -151,6 +156,9 @@ export default function autoImports(options = {}) {
 			server.watcher.on("unlink", () => refreshMap(null, server));
 		},
 		async transform(code, id) {
+			// FIX 3: Instantly ignore virtual IDs and internal Rollup/Vite null-byte paths
+			if (id.startsWith("virtual:") || id.startsWith("\0")) return null;
+
 			const dtsPath = resolve(process.cwd(), opts.dts);
 			const cleanId = id.split("?")[0];
 			if (cleanId.includes("node_modules")) return null;
