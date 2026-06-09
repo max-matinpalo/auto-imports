@@ -59,6 +59,7 @@ export default function autoImports(options = {}) {
 	};
 
 	let exportMap = Object.create(null);
+	let fileSignatures = Object.create(null);
 	let queue = Promise.resolve();
 	let viteServer = null;
 
@@ -75,12 +76,6 @@ export default function autoImports(options = {}) {
 			return;
 		}
 		exportMap[name] = exp;
-	};
-
-	const removeFileExports = (file) => {
-		for (const name in exportMap) {
-			if (exportMap[name].file === file) delete exportMap[name];
-		}
 	};
 
 	const parseFileExports = async (file) => {
@@ -131,56 +126,54 @@ export default function autoImports(options = {}) {
 		return queue;
 	};
 
+	const rebuildMap = async (dtsPath) => {
+		exportMap = Object.create(null);
+		fileSignatures = Object.create(null);
+		for (const lib of opts.libs) {
+			try {
+				const mod = await import(lib);
+				for (const key of Object.keys(mod)) {
+					if (key !== "default")
+						addExport(key, { file: lib, isDefault: false, isLib: true });
+				}
+			} catch { }
+		}
+		const allFiles = await walk(resolve(process.cwd(), opts.src), opts.extensions, dtsPath);
+		for (const file of allFiles) {
+			const discovered = await parseFileExports(file);
+			fileSignatures[file] = discovered.map(e => `${e.name}:${e.isDefault}`).sort().join(",");
+			for (const exp of discovered) addExport(exp.name, exp);
+		}
+		await writeDeclarationFile(exportMap, dtsPath);
+	};
+
 	return {
 		name: "auto-imports",
 
 		async buildStart() {
-			await runSync(async (dtsPath) => {
-				exportMap = Object.create(null);
-				for (const lib of opts.libs) {
-					try {
-						const mod = await import(lib);
-						for (const key of Object.keys(mod)) {
-							if (key !== "default")
-								addExport(key, { file: lib, isDefault: false, isLib: true });
-						}
-					} catch { }
-				}
-				const allFiles = await walk(resolve(process.cwd(), opts.src), opts.extensions, dtsPath);
-				for (const file of allFiles) {
-					const discovered = await parseFileExports(file);
-					for (const exp of discovered) addExport(exp.name, exp);
-				}
-				await writeDeclarationFile(exportMap, dtsPath);
-			});
+			await runSync(rebuildMap);
 		},
 
 		configureServer(server) {
 			viteServer = server;
-			const updateFile = (p, checkSignature = false) => {
-				const file = resolve(p);
+			const handleStructuralUpdate = () => {
 				runSync(async (dtsPath) => {
-					if (!isSourceFile(file, opts.extensions, dtsPath)) return;
-					const newExports = await parseFileExports(file);
-					if (checkSignature) {
-						const oldExports = Object.keys(exportMap).filter(k => exportMap[k].file === file);
-						const oldSig = oldExports.map(k => `${k}:${exportMap[k].isDefault}`).sort().join(",");
-						const newSig = newExports.map(e => `${e.name}:${e.isDefault}`).sort().join(",");
-						if (oldSig === newSig) return;
-					}
-					removeFileExports(file);
-					for (const exp of newExports) addExport(exp.name, exp);
-					await writeDeclarationFile(exportMap, dtsPath);
+					await rebuildMap(dtsPath);
 					server.moduleGraph.invalidateAll();
 				});
 			};
 
-			server.watcher.on("add", p => updateFile(p));
-			server.watcher.on("change", p => updateFile(p, true));
-			server.watcher.on("unlink", p => {
+			server.watcher.on("add", handleStructuralUpdate);
+			server.watcher.on("unlink", handleStructuralUpdate);
+			server.watcher.on("change", p => {
+				const file = resolve(p);
 				runSync(async (dtsPath) => {
-					removeFileExports(resolve(p));
-					await writeDeclarationFile(exportMap, dtsPath);
+					if (!isSourceFile(file, opts.extensions, dtsPath)) return;
+					const newExports = await parseFileExports(file);
+					const newSig = newExports.map(e => `${e.name}:${e.isDefault}`).sort().join(",");
+					if (fileSignatures[file] === newSig) return;
+
+					await rebuildMap(dtsPath);
 					server.moduleGraph.invalidateAll();
 				});
 			});
