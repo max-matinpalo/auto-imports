@@ -55,34 +55,6 @@ function findIdentifiers(code) {
 	return [...new Set(matches || [])];
 }
 
-function reportBuildError(error, file, server) {
-	const details = (error.errors || [])
-		.map(err => {
-			const loc = err.location
-				? `${err.location.file || file}:${err.location.line}:${err.location.column}`
-				: file;
-			return `${loc}\n${err.text}`;
-		})
-		.join("\n\n");
-
-	const message = `[auto-imports] Failed to scan exports in ${file}`;
-	const stack = details || error.message || String(error);
-
-	console.error(`${message}\n${stack}`);
-
-	if (server) {
-		server.ws.send({
-			type: "error",
-			err: {
-				message,
-				stack,
-				plugin: "auto-imports",
-				id: file
-			}
-		});
-	}
-}
-
 export default function autoImports(options = {}) {
 	const rawLibs = options.libs || (options.lib ? [options.lib] : []);
 	const opts = {
@@ -94,129 +66,140 @@ export default function autoImports(options = {}) {
 	};
 
 	let exportMap = Object.create(null);
+	let queue = Promise.resolve();
 
-	const processFiles = async (files, map, server) => {
-		if (!files.length) return;
+	const parseFileExports = async (file) => {
+		const exports = [];
+		try {
+			const result = await esbuild.build({
+				entryPoints: [file],
+				bundle: false,
+				metafile: true,
+				write: false,
+				outdir: "dist",
+				format: "esm",
+				logLevel: "silent",
+				loader: { ".js": "jsx", ".jsx": "jsx", ".ts": "ts", ".tsx": "tsx" }
+			});
 
-		for (const name in map) {
-			if (files.includes(map[name].file)) delete map[name];
-		}
+			for (const outputData of Object.values(result.metafile.outputs)) {
+				if (!outputData.entryPoint) continue;
+				const fileAbs = resolve(process.cwd(), outputData.entryPoint);
 
-		for (const file of files) {
-			try {
-				const result = await esbuild.build({
-					entryPoints: [file],
-					bundle: false,
-					metafile: true,
-					write: false,
-					outdir: "dist",
-					format: "esm",
-					logLevel: "silent",
-					loader: {
-						".js": "jsx",
-						".jsx": "jsx",
-						".ts": "ts",
-						".tsx": "tsx"
+				for (let name of outputData.exports || []) {
+					let isDefault = false;
+
+					if (name === "default") {
+						const code = readFileSync(fileAbs, "utf8");
+						const rx = /export\s+default\s+(?:async\s+)?(?:function\s+|class\s+)?\s*([\w$]+)/;
+						const m = code.match(rx);
+
+						if (!m || ["function", "class", "async"].includes(m[1])) continue;
+						name = m[1];
+						isDefault = true;
 					}
-				});
-
-				for (const outputData of Object.values(result.metafile.outputs)) {
-					if (!outputData.entryPoint) continue;
-
-					const fileAbs = resolve(process.cwd(), outputData.entryPoint);
-
-					for (let name of outputData.exports || []) {
-						let isDefault = false;
-
-						if (name === "default") {
-							const code = readFileSync(fileAbs, "utf8");
-							const rx = /export\s+default\s+(?:async\s+)?(?:function\s+|class\s+)?\s*([\w$]+)/;
-							const m = code.match(rx);
-
-							if (!m || ["function", "class", "async"].includes(m[1])) continue;
-
-							name = m[1];
-							isDefault = true;
-						}
-
-						if (map[name] && map[name].file !== fileAbs) {
-							const msg = `Conflict for identifier "${name}"`;
-							const details = `Paths:\n1. ${fileAbs}\n2. ${map[name].file}`;
-
-							console.error(`[auto-imports] ${msg}\n${details}`);
-
-							if (server) {
-								server.ws.send({
-									type: "error",
-									err: {
-										message: msg,
-										stack: details,
-										plugin: "auto-imports",
-										id: fileAbs
-									}
-								});
-							}
-
-							continue;
-						}
-
-						map[name] = { file: fileAbs, isDefault };
-					}
+					exports.push({ name, file: fileAbs, isDefault });
 				}
-			} catch (e) {
-				reportBuildError(e, file, server);
 			}
+		} catch {
+			console.error(`[auto-imports] Failed to parse ${file}`);
 		}
+		return exports;
 	};
 
-	const refreshMap = async (targetFiles, server) => {
-		const dtsPath = resolve(process.cwd(), opts.dts);
-		const newMap = targetFiles
-			? Object.assign(Object.create(null), exportMap)
-			: Object.create(null);
-
-		if (!targetFiles) {
-			for (const lib of opts.libs) {
-				try {
-					const mod = await import(lib);
-
-					for (const key of Object.keys(mod)) {
-						if (key !== "default") {
-							newMap[key] = { file: lib, isDefault: false, isLib: true };
-						}
-					}
-				} catch (e) {
-					console.error(`[auto-imports] Failed to load library "${lib}": ${e.message}`);
-				}
+	const runSync = (task) => {
+		queue = queue.then(async () => {
+			try {
+				const dtsPath = resolve(process.cwd(), opts.dts);
+				await task(dtsPath);
+			} catch (e) {
+				console.error(`[auto-imports] Task execution failed: ${e.message}`);
 			}
-
-			const allFiles = await walk(resolve(process.cwd(), opts.src), opts.extensions, dtsPath);
-			await processFiles(allFiles, newMap, server);
-		} else {
-			const validFiles = targetFiles.filter(f => isSourceFile(f, opts.extensions, dtsPath));
-
-			if (!validFiles.length) return;
-
-			await processFiles(validFiles, newMap, server);
-		}
-
-		exportMap = newMap;
-		await writeDeclarationFile(exportMap, dtsPath);
-
-		if (server) server.moduleGraph.invalidateAll();
+		});
+		return queue;
 	};
 
 	return {
 		name: "auto-imports",
 
 		async buildStart() {
-			await refreshMap();
+			await runSync(async (dtsPath) => {
+				exportMap = Object.create(null);
+
+				for (const lib of opts.libs) {
+					try {
+						const mod = await import(lib);
+						for (const key of Object.keys(mod)) {
+							if (key !== "default") {
+								exportMap[key] = { file: lib, isDefault: false, isLib: true };
+							}
+						}
+					} catch { }
+				}
+
+				const srcDir = resolve(process.cwd(), opts.src);
+				const allFiles = await walk(srcDir, opts.extensions, dtsPath);
+				for (const file of allFiles) {
+					const discovered = await parseFileExports(file);
+					for (const exp of discovered) exportMap[exp.name] = exp;
+				}
+				await writeDeclarationFile(exportMap, dtsPath);
+			});
 		},
 
 		configureServer(server) {
-			server.watcher.on("add", p => refreshMap([resolve(p)], server));
-			server.watcher.on("change", p => refreshMap([resolve(p)], server));
-			server.watcher.on("unlink", () => refreshMap(null, server));
+			const onStructureChange = (p) => {
+				const file = resolve(p);
+				runSync(async (dtsPath) => {
+					if (!isSourceFile(file, opts.extensions, dtsPath)) return;
+
+					for (const name in exportMap) {
+						if (exportMap[name].file === file) delete exportMap[name];
+					}
+
+					const discovered = await parseFileExports(file);
+					for (const exp of discovered) exportMap[exp.name] = exp;
+
+					await writeDeclarationFile(exportMap, dtsPath);
+					server.moduleGraph.invalidateAll();
+				});
+			};
+
+			const onEdit = (p) => {
+				const file = resolve(p);
+				runSync(async (dtsPath) => {
+					if (!isSourceFile(file, opts.extensions, dtsPath)) return;
+
+					const oldExports = Object.keys(exportMap).filter(k => exportMap[k].file === file);
+					const newExports = await parseFileExports(file);
+
+					const oldSignatures = oldExports.map(k => `${k}:${exportMap[k].isDefault}`).sort().join(",");
+					const newSignatures = newExports.map(e => `${e.name}:${e.isDefault}`).sort().join(",");
+
+					if (oldSignatures === newSignatures) return;
+
+					for (const name of oldExports) delete exportMap[name];
+					for (const exp of newExports) exportMap[exp.name] = exp;
+
+					await writeDeclarationFile(exportMap, dtsPath);
+					server.moduleGraph.invalidateAll();
+				});
+			};
+
+			const onUnlink = (p) => {
+				const file = resolve(p);
+				runSync(async (dtsPath) => {
+					for (const name in exportMap) {
+						if (exportMap[name].file === file) delete exportMap[name];
+					}
+					await writeDeclarationFile(exportMap, dtsPath);
+					server.moduleGraph.invalidateAll();
+				});
+			};
+
+			server.watcher.on("add", onStructureChange);
+			server.watcher.on("unlink", onUnlink);
+			server.watcher.on("change", onEdit);
 		},
 
 		async transform(code, id) {
@@ -254,7 +237,6 @@ export default function autoImports(options = {}) {
 			}
 
 			if (!injected) return null;
-
 			return { code: injected + code, map: null };
 		}
 	};
