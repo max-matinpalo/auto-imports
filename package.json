@@ -1,6 +1,6 @@
 {
 	"name": "auto-imports",
-	"version": "0.7.4",
+	"version": "0.8.5",
 	"type": "module",
 	"main": "auto-imports.js",
 	"author": "Max Matinpalo",
